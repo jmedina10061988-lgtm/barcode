@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Price Barcode Scanner</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load QuaggaJS (Barcode Scanner) -->
+    <script src="https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js"></script>
+    <!-- Font Inter -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117; /* Dark background */
+        }
+        
+        /* 1. Camera Viewport Container */
+        #interactive.viewport {
+            width: 100%;
+            height: auto;
+            position: relative;
+            /* Ensure the text content (camera-status) is always centered */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden; /* Important for clean edges */
+        }
+
+        /* 2. Video/Canvas Centering Fix (ADDED/MODIFIED) */
+        #interactive.viewport > canvas, #interactive.viewport > video {
+            /* Full coverage of the parent */
+            width: 100%; 
+            height: 100%; 
+            /* Absolute centering trick */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            /* Aesthetics */
+            border-radius: 0.5rem;
+            object-fit: cover;
+        }
+
+        /* Custom styling for the scanning line */
+        #interactive.viewport:after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: rgb(255, 0, 0);
+            background: linear-gradient(90deg, rgba(255,0,0,0) 0%, rgba(255,0,0,1) 50%, rgba(255,0,0,0) 100%);
+            animation: scan 2s infinite alternate;
+        }
+        @keyframes scan {
+            0% { box-shadow: 0 0 5px rgba(255, 0, 0, 0.5); }
+            100% { box-shadow: 0 0 10px rgba(255, 0, 0, 0.8); }
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8 text-white min-h-screen">
+    <div class="max-w-xl mx-auto">
+        <h1 class="text-3xl font-bold mb-6 text-center text-blue-400">Barcode Price Checker</h1>
+
+        <!-- Camera Viewport and Scan Area -->
+        <div id="interactive" class="viewport shadow-2xl bg-gray-900 border-2 border-blue-600 rounded-xl mb-6 p-1 aspect-video relative">
+            <p id="camera-status" class="text-gray-400 text-lg">Click 'Start Scanner' to begin...</p>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex flex-col sm:flex-row justify-center space-y-3 sm:space-y-0 sm:space-x-4 mb-8">
+            <button id="start-scanner" class="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-semibold shadow-lg transition duration-200">
+                Start Scanner
+            </button>
+            <button id="stop-scanner" class="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-semibold shadow-lg transition duration-200" disabled>
+                Stop Scanner
+            </button>
+        </div>
+
+        <div class="bg-gray-800 p-5 rounded-xl shadow-inner border border-gray-700">
+            <h2 class="text-xl font-semibold mb-4 text-gray-300">Scan Results</h2>
+
+            <!-- Barcode Display -->
+            <div class="mb-4">
+                <p class="text-gray-400 text-sm">Last Scanned Barcode (UPC/EAN):</p>
+                <p id="barcode-result" class="text-2xl font-mono break-all text-yellow-300">N/A</p>
+            </div>
+
+            <!-- Price Display -->
+            <div id="price-display-section" class="mb-6">
+                <h3 class="text-lg font-semibold mb-2 text-blue-400">Price History</h3>
+                <div id="price-history" class="space-y-2 max-h-48 overflow-y-auto pr-2">
+                    <!-- Price entries will be injected here -->
+                    <p id="no-prices-message" class="text-gray-500 italic">Scan a product to see its price history.</p>
+                </div>
+            </div>
+
+            <!-- Price Input Form -->
+            <div id="price-input-form" class="hidden pt-4 border-t border-gray-700">
+                <h3 class="text-lg font-semibold mb-3 text-white">Add/Update Price</h3>
+                <input type="text" id="product-name-input" placeholder="Product Name (Optional)" class="w-full p-2 mb-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500">
+                <input type="text" id="shop-name-input" placeholder="Shop Name (e.g., 'Walmart', 'Local Grocer')" class="w-full p-2 mb-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500">
+                <input type="number" id="price-input" placeholder="Price (e.g., 9.99)" step="0.01" class="w-full p-2 mb-4 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500">
+                <button id="save-price-btn" class="w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition duration-200" disabled>
+                    Save Price
+                </button>
+                <p id="save-status" class="text-center mt-3 text-sm"></p>
+            </div>
+        </div>
+
+        <p class="text-xs text-center text-gray-500 mt-6">
+            User ID: <span id="user-id">Loading...</span>
+        </p>
+    </div>
+
+    <!-- Firebase Imports and Setup -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, collection, setDoc, getDoc, updateDoc, arrayUnion, query, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        setLogLevel('Debug');
+
+        // --- GLOBAL VARIABLES (Provided by Canvas Environment) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let currentUserId = null;
+        let lastScannedBarcode = null;
+        let isScannerRunning = false;
+
+        // --- DOM Elements ---
+        const startBtn = document.getElementById('start-scanner');
+        const stopBtn = document.getElementById('stop-scanner');
+        const cameraStatusEl = document.getElementById('camera-status');
+        const barcodeResultEl = document.getElementById('barcode-result');
+        const priceHistoryEl = document.getElementById('price-history');
+        const noPricesMessageEl = document.getElementById('no-prices-message');
+        const priceInputForm = document.getElementById('price-input-form');
+        const productNameInput = document.getElementById('product-name-input');
+        const shopNameInput = document.getElementById('shop-name-input');
+        const priceInput = document.getElementById('price-input');
+        const savePriceBtn = document.getElementById('save-price-btn');
+        const saveStatusEl = document.getElementById('save-status');
+        const userIdEl = document.getElementById('user-id');
+
+        // --- UTILITY FUNCTIONS ---
+
+        function getPublicDocRef(barcode) {
+            return doc(db, `/artifacts/${appId}/public/data/prices`, barcode);
+        }
+
+        function formatPrice(price) {
+            return new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD'
+            }).format(price);
+        }
+
+        function showStatus(element, message, isError = false) {
+            element.textContent = message;
+            element.className = `text-center mt-3 text-sm ${isError ? 'text-red-400' : 'text-green-400'}`;
+        }
+
+        // --- FIREBASE INITIALIZATION AND AUTH ---
+
+        async function initializeFirebase() {
+            if (!firebaseConfig) {
+                console.error("Firebase config is missing.");
+                showStatus(saveStatusEl, "Database setup failed. Config missing.", true);
+                return;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        currentUserId = user.uid;
+                        userIdEl.textContent = currentUserId;
+                        console.log("Firebase Auth Ready. User ID:", currentUserId);
+                    } else {
+                        // This should only happen if sign-in failed, but we use the provided token or anonymous sign-in
+                        currentUserId = crypto.randomUUID();
+                        userIdEl.textContent = `Anonymous (${currentUserId.substring(0, 8)}...)`;
+                        console.log("Signed in anonymously. Generated ID:", currentUserId);
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                showStatus(saveStatusEl, `DB Init Error: ${error.message}`, true);
+            }
+        }
+
+        // --- FIRESTORE DATA HANDLING ---
+
+        function renderPriceHistory(data) {
+            priceHistoryEl.innerHTML = '';
+            if (!data || !data.prices || Object.keys(data.prices).length === 0) {
+                const p = document.createElement('p');
+                p.id = "no-prices-message";
+                p.className = "text-gray-500 italic";
+                p.textContent = "No prices found for this product. Be the first to add one!";
+                priceHistoryEl.appendChild(p);
+                return;
+            }
+
+            const prices = data.prices;
+            const entries = Object.keys(prices).map(shopName => ({
+                shop: shopName,
+                ...prices[shopName]
+            }));
+
+            // Sort by price ascending
+            entries.sort((a, b) => a.price - b.price);
+
+            entries.forEach(entry => {
+                const priceEl = document.createElement('div');
+                priceEl.className = 'flex justify-between items-center p-3 bg-gray-700 rounded-lg shadow-md';
+                priceEl.innerHTML = `
+                    <div class="flex flex-col">
+                        <span class="text-lg font-semibold text-white">${entry.shop}</span>
+                        <span class="text-xs text-gray-400">by User: ${entry.updatedBy.substring(0, 8)}...</span>
+                    </div>
+                    <span class="text-2xl font-bold ${entries[0].price === entry.price ? 'text-green-400' : 'text-red-400'}">
+                        ${formatPrice(entry.price)}
+                    </span>
+                `;
+                priceHistoryEl.appendChild(priceEl);
+            });
+
+            // Update Product Name Input
+            productNameInput.value = data.productName || '';
+        }
+
+        function listenToBarcodePrices(barcode) {
+            if (!db || !barcode) return;
+
+            // Remove existing listener if any
+            if (window.unsubscribeListener) {
+                window.unsubscribeListener();
+            }
+
+            const docRef = getPublicDocRef(barcode);
+
+            window.unsubscribeListener = onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    renderPriceHistory(docSnap.data());
+                } else {
+                    // Document does not exist, clear display and show message
+                    renderPriceHistory({});
+                }
+            }, (error) => {
+                console.error("Firestore Listener Error:", error);
+                showStatus(saveStatusEl, `Data Fetch Error: ${error.message}`, true);
+            });
+        }
+
+        async function savePrice() {
+            const barcode = lastScannedBarcode;
+            const shopName = shopNameInput.value.trim();
+            const price = parseFloat(priceInput.value);
+            const productName = productNameInput.value.trim() || 'Unknown Product';
+
+            if (!barcode || !shopName || isNaN(price) || price <= 0) {
+                showStatus(saveStatusEl, "Please provide a valid Barcode, Shop Name, and Price.", true);
+                return;
+            }
+
+            savePriceBtn.disabled = true;
+            showStatus(saveStatusEl, "Saving price...", false);
+
+            try {
+                const docRef = getPublicDocRef(barcode);
+
+                const newPriceEntry = {
+                    price: price,
+                    updatedBy: currentUserId,
+                    timestamp: Date.now()
+                };
+
+                const updateData = {
+                    productName: productName,
+                    [`prices.${shopName}`]: newPriceEntry
+                };
+
+                // Check if the document exists first
+                const docSnap = await getDoc(docRef);
+
+                if (docSnap.exists()) {
+                    await updateDoc(docRef, updateData);
+                } else {
+                    // If it doesn't exist, create it with initial data
+                    const initialPrices = {};
+                    initialPrices[shopName] = newPriceEntry;
+
+                    await setDoc(docRef, {
+                        barcode: barcode,
+                        productName: productName,
+                        prices: initialPrices
+                    });
+                }
+
+                showStatus(saveStatusEl, `Price (${formatPrice(price)}) for ${shopName} saved successfully!`, false);
+                shopNameInput.value = ''; // Clear input fields after success
+                priceInput.value = '';
+
+            } catch (error) {
+                console.error("Error saving price:", error);
+                showStatus(saveStatusEl, `Error saving price: ${error.message}`, true);
+            } finally {
+                savePriceBtn.disabled = false;
+            }
+        }
+
+        // --- QUAGGAJS (BARCODE SCANNER) LOGIC ---
+
+        function startScanner() {
+            if (isScannerRunning) return;
+
+            cameraStatusEl.textContent = 'Starting camera...';
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+
+            Quagga.init({
+                inputStream: {
+                    name: "Live",
+                    type: "LiveStream",
+                    target: document.querySelector('#interactive'),
+                    constraints: {
+                        // Request balanced resolution for speed and clarity
+                        width: { min: 640, ideal: 800, max: 1920 },
+                        height: { min: 480, ideal: 600, max: 1080 },
+                        facingMode: "environment" // Use back camera on mobile
+                    },
+                    // *** REMOVED RESTRICTIVE 'area' TO SCAN THE WHOLE VIEWPORT ***
+                },
+                
+                // *** OPTIMIZATION FOR FASTER AND EASIER DETECTION ***
+                numOfWorkers: navigator.hardwareConcurrency || 2, // Use multiple CPU cores for parallel processing
+                frequency: 10, // Scan up to 10 times per second
+                locator: {
+                    patchSize: "large", // Use larger patches to detect wider/farther barcodes
+                    halfSample: false, // Process the full image resolution for better detail (more accurate for blurry/far codes)
+                    locate: true
+                },
+                decoder: {
+                    readers: ["ean_reader", "upc_reader", "ean_8_reader", "code_128_reader"],
+                    multiple: false // Only detect one code at a time
+                }
+            }, function (err) {
+                if (err) {
+                    console.error(err);
+                    cameraStatusEl.textContent = 'Camera failed to start. Ensure camera access is allowed.';
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    return
+                }
+                Quagga.start();
+                isScannerRunning = true;
+                cameraStatusEl.textContent = 'Scanning... Move slowly to find the barcode.';
+            });
+        }
+
+        function stopScanner() {
+            if (!isScannerRunning) return;
+
+            Quagga.stop();
+            isScannerRunning = false;
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            cameraStatusEl.textContent = 'Scanner stopped. Click Start Scanner to resume.';
+        }
+
+        Quagga.onDetected(function (data) {
+            // Stop scanning briefly to ensure stability
+            // stopScanner();
+
+            const barcode = data.codeResult.code;
+
+            // Only update if a new, unique barcode is scanned
+            if (barcode !== lastScannedBarcode) {
+                lastScannedBarcode = barcode;
+                barcodeResultEl.textContent = barcode;
+                priceInputForm.classList.remove('hidden');
+                savePriceBtn.disabled = false;
+                showStatus(saveStatusEl, `Barcode detected: ${barcode}`, false);
+
+                // Start listening to the database for this new barcode
+                listenToBarcodePrices(barcode);
+            }
+        });
+
+        // --- EVENT LISTENERS ---
+
+        startBtn.addEventListener('click', startScanner);
+        stopBtn.addEventListener('click', stopScanner);
+        savePriceBtn.addEventListener('click', savePrice);
+
+        // Enable/Disable Save button based on price input
+        priceInput.addEventListener('input', () => {
+            const price = parseFloat(priceInput.value);
+            savePriceBtn.disabled = isNaN(price) || price <= 0 || !lastScannedBarcode;
+        });
+
+        // --- INITIAL SETUP ---
+        initializeFirebase();
+
+    </script>
+</body>
+</html>
