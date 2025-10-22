@@ -15,17 +15,34 @@
             font-family: 'Inter', sans-serif;
             background-color: #0d1117; /* Dark background */
         }
+        
+        /* 1. Camera Viewport Container */
         #interactive.viewport {
             width: 100%;
             height: auto;
             position: relative;
+            /* Ensure the text content (camera-status) is always centered */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden; /* Important for clean edges */
         }
+
+        /* 2. Video/Canvas Centering Fix (ADDED/MODIFIED) */
         #interactive.viewport > canvas, #interactive.viewport > video {
-            max-width: 100%;
-            height: auto;
+            /* Full coverage of the parent */
+            width: 100%; 
+            height: 100%; 
+            /* Absolute centering trick */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            /* Aesthetics */
             border-radius: 0.5rem;
             object-fit: cover;
         }
+
         /* Custom styling for the scanning line */
         #interactive.viewport:after {
             content: '';
@@ -49,7 +66,7 @@
         <h1 class="text-3xl font-bold mb-6 text-center text-blue-400">Barcode Price Checker</h1>
 
         <!-- Camera Viewport and Scan Area -->
-        <div id="interactive" class="viewport shadow-2xl bg-gray-900 border-2 border-blue-600 rounded-xl mb-6 p-1 aspect-video flex items-center justify-center relative">
+        <div id="interactive" class="viewport shadow-2xl bg-gray-900 border-2 border-blue-600 rounded-xl mb-6 p-1 aspect-video relative">
             <p id="camera-status" class="text-gray-400 text-lg">Click 'Start Scanner' to begin...</p>
         </div>
 
@@ -196,8 +213,11 @@
         function renderPriceHistory(data) {
             priceHistoryEl.innerHTML = '';
             if (!data || !data.prices || Object.keys(data.prices).length === 0) {
-                noPricesMessageEl.textContent = "No prices found for this product. Be the first to add one!";
-                priceHistoryEl.appendChild(noPricesMessageEl);
+                const p = document.createElement('p');
+                p.id = "no-prices-message";
+                p.className = "text-gray-500 italic";
+                p.textContent = "No prices found for this product. Be the first to add one!";
+                priceHistoryEl.appendChild(p);
                 return;
             }
 
@@ -224,7 +244,6 @@
                 `;
                 priceHistoryEl.appendChild(priceEl);
             });
-            noPricesMessageEl.remove();
 
             // Update Product Name Input
             productNameInput.value = data.productName || '';
@@ -325,11 +344,25 @@
                     type: "LiveStream",
                     target: document.querySelector('#interactive'),
                     constraints: {
+                        // Request balanced resolution for speed and clarity
+                        width: { min: 640, ideal: 800, max: 1920 },
+                        height: { min: 480, ideal: 600, max: 1080 },
                         facingMode: "environment" // Use back camera on mobile
-                    }
+                    },
+                    // *** REMOVED RESTRICTIVE 'area' TO SCAN THE WHOLE VIEWPORT ***
+                },
+                
+                // *** OPTIMIZATION FOR FASTER AND EASIER DETECTION ***
+                numOfWorkers: navigator.hardwareConcurrency || 2, // Use multiple CPU cores for parallel processing
+                frequency: 10, // Scan up to 10 times per second
+                locator: {
+                    patchSize: "large", // Use larger patches to detect wider/farther barcodes
+                    halfSample: false, // Process the full image resolution for better detail (more accurate for blurry/far codes)
+                    locate: true
                 },
                 decoder: {
-                    readers: ["ean_reader", "upc_reader", "ean_8_reader", "code_128_reader"]
+                    readers: ["ean_reader", "upc_reader", "ean_8_reader", "code_128_reader"],
+                    multiple: false // Only detect one code at a time
                 }
             }, function (err) {
                 if (err) {
@@ -341,7 +374,7 @@
                 }
                 Quagga.start();
                 isScannerRunning = true;
-                cameraStatusEl.textContent = 'Scanning... Position barcode in the center line.';
+                cameraStatusEl.textContent = 'Scanning... Move slowly to find the barcode.';
             });
         }
 
